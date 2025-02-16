@@ -35,116 +35,111 @@ trapinithart(void)
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
 //
-void
-usertrap(void)
-{
+void usertrap(void) {
   int which_dev = 0;
 
-  if((r_sstatus() & SSTATUS_SPP) != 0)
-    panic("usertrap: not from user mode");
+  if ((r_sstatus() & SSTATUS_SPP) != 0) {
+      panic("usertrap: not from user mode");
+  }
 
-  // send interrupts and exceptions to kerneltrap(),
-  // since we're now in the kernel.
   w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
   
-  // save user program counter.
+  // Save user program counter.
   p->tf->epc = r_sepc();
   
-  if(r_scause() == 8){
-    // system call
-    if(p->killed)
-      exit(-1);
+  if (r_scause() == 8) {
+      // System call
+      if (p->killed) {
+          exit(-1);
+      }
 
-    // sepc points to the ecall instruction,
-    // but we want to return to the next instruction.
-    p->tf->epc += 4;
+      // Advance EPC past the ecall instruction.
+      p->tf->epc += 4;
 
-    // an interrupt will change sstatus &c registers,
-    // so don't enable until done with those registers.
-    intr_on();
-
-    syscall();
-  } else if((which_dev = devintr()) != 0){
-    // ok
-  } else if (r_scause() == 15) {  // Page Fault (COW Handling)
-    uint64 va = r_stval();
-    pte_t *pte;
-    uint64 flags;
-    uint64 oldPA;
-    char *newPage;
-    pagetable_t pgTbl = p->pagetable;
-
-    if (va >= MAXVA) { 
-        p->killed = 1;
-        exit(-1);
-    }
-    if ((pte = walk(pgTbl, va, 0)) == 0) { 
-        p->killed = 1;
-        exit(-1);
-    }
-    if (((*pte) & PTE_V) == 0 || ((*pte) & PTE_U) == 0) { 
-        p->killed = 1;
-        exit(-1);
-    }
-
-    // A COW page is one that was originally writable and now has the PTE_RSW flag.
-    if (!(*pte & PTE_RSW)) {
-        printf("usertrap: page fault on non-COW page at %p\n", va);
-        p->killed = 1;
-        exit(-1);
-    }
-
-    // Get the old physical address.
-    oldPA = PTE2PA(*pte);
-    
-    // Allocate a new page. kalloc() initializes its ref_count to 1.
-    if ((newPage = kalloc()) == 0) {
-        p->killed = 1;
-        exit(-1);
-    }
-    
-    // Copy the content from the old page to the new page.
-    memmove(newPage, (char *)oldPA, PGSIZE);
-    
-    // Get the flags from the old mapping.
-    flags = PTE_FLAGS(*pte);
-    // Clear the COW flag and add write permission.
-    flags &= ~PTE_RSW;
-    flags |= PTE_W;
-    
-    // Unmap the old page.
-    uvmunmap(pgTbl, PGROUNDDOWN(va), 1, 0);
-    
-    // Map the new page at the faulting address with the updated flags.
-    if (mappages(pgTbl, PGROUNDDOWN(va), PGSIZE, (uint64)newPage, flags) != 0) {
-        kfree(newPage);
-        p->killed = 1;
-        exit(-1);
-    }
-    
-    // Decrement the reference count for the old physical page.
-    // kfree() will free the page only if no other process is using it.
-    kfree((void *)oldPA);
-    
+      // Enable interrupts after handling registers.
+      intr_on();
+      syscall();
   } else if ((which_dev = devintr()) != 0) {
-    // ok
+      // Interrupt handled
+  } else if (r_scause() == 15) {  // Page Fault (COW Handling)
+      uint64 fault_addr = r_stval();
+      pte_t *pte;
+      uint64 old_pa;
+      char *new_page;
+      pagetable_t pg_table = p->pagetable;
+      uint64 flags;
+
+      if (fault_addr >= MAXVA) {
+          p->killed = 1;
+          exit(-1);
+      }
+      
+      if ((pte = walk(pg_table, fault_addr, 0)) == 0) {
+          p->killed = 1;
+          exit(-1);
+      }
+      
+      if (((*pte) & PTE_V) == 0 || ((*pte) & PTE_U) == 0) {
+          p->killed = 1;
+          exit(-1);
+      }
+
+      // Check if the page is a Copy-On-Write page.
+      if (!(*pte & PTE_RSW)) {
+          printf("usertrap: unexpected page fault at %p\n", fault_addr);
+          p->killed = 1;
+          exit(-1);
+      }
+
+      // Get the physical address of the old page.
+      old_pa = PTE2PA(*pte);
+      
+      // Allocate a new page.
+      if ((new_page = kalloc()) == 0) {
+          p->killed = 1;
+          exit(-1);
+      }
+      
+      // Copy content from the old page to the new page.
+      memmove(new_page, (char*)old_pa, PGSIZE);
+      
+      // Retrieve and update the page flags.
+      flags = PTE_FLAGS(*pte);
+      flags &= ~PTE_RSW;
+      flags |= PTE_W;
+      
+      // Unmap the old page before remapping.
+      uvmunmap(pg_table, PGROUNDDOWN(fault_addr), 1, 0);
+      
+      // Map the new page at the faulting address with updated flags.
+      if (mappages(pg_table, PGROUNDDOWN(fault_addr), PGSIZE, (uint64)new_page, flags) != 0) {
+          kfree(new_page);
+          p->killed = 1;
+          exit(-1);
+      }
+      
+      // Free the old page if no other process is using it.
+      kfree((void*)old_pa);
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
   }
 
-  if(p->killed)
-    exit(-1);
+  if (p->killed) {
+      exit(-1);
+  }
 
-  // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
+  // Yield CPU if the interrupt is a timer interrupt.
+  if (which_dev == 2) {
+      yield();
+  }
 
   usertrapret();
 }
+
 
 //
 // return to user space
