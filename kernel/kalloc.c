@@ -54,7 +54,9 @@ freerange(void *pa_start, void *pa_end)
 // which normally should have been returned by a
 // call to kalloc().  (The exception is when
 // initializing the allocator; see kinit above.)
-void kfree(void *pa) {
+void
+kfree(void *pa)
+{
   //decrease ref. counter
   acquire(&ref_lock);
   ref_count[((uint64)pa)/PGSIZE]--;
@@ -79,7 +81,6 @@ void kfree(void *pa) {
   }
 }
 
-
 // Allocate one 4096-byte page of physical memory.
 // Returns a pointer that the kernel can use.
 // Returns 0 if the memory cannot be allocated.
@@ -94,7 +95,7 @@ void* kalloc(void) {
   if (r) {
       memset((char*)r, 5, PGSIZE);  // Fill with junk for debugging
 
-      // over here we initialize reference count for a new page
+      // Initialize reference count for new page
       acquire(&ref_lock);
       ref_count[((uint64)r)/PGSIZE]=1; 
       release(&ref_lock);
