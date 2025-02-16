@@ -55,27 +55,28 @@ freerange(void *pa_start, void *pa_end)
 // call to kalloc().  (The exception is when
 // initializing the allocator; see kinit above.)
 void kfree(void *pa) {
-  if (!pa)
-      panic("kfree: NULL pointer");
+  //decrease ref. counter
+  acquire(&ref_lock);
+  ref_count[((uint64)pa)/PGSIZE]--;
+  release(&ref_lock);
 
-  if (((uint64)pa % PGSIZE) != 0 || (uint64)pa < KERNBASE || (uint64)pa >= PHYSTOP)
-      panic("kfree: invalid addr");
+  if(ref_count[(uint64)pa/PGSIZE] ==0){
 
-  int idx = FRINDEX(pa);
-  acquire(&kmem.lock);
-  
-  if (ref_count[idx] > 1) {
-      ref_count[idx]--;
-      release(&kmem.lock);
-      return;
+    struct run *r;
+
+    if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+      panic("kfree");
+
+    // Fill with junk to catch dangling refs.
+    memset(pa, 1, PGSIZE);
+
+    r = (struct run*)pa;
+
+    acquire(&kmem.lock);
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+    release(&kmem.lock);
   }
-
-  ref_count[idx] = 0;
-  struct run *r = (struct run*)pa;
-  memset(pa, 1, PGSIZE);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
 }
 
 
